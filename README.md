@@ -9,7 +9,7 @@ End users consume the published bucket as a pacman repository. To use it:
 1. Add the repo to `/etc/pacman.conf`:
    ```ini
    [ogc]
-   Server = https://ogcarchrepo.ilikeinfra.cyou
+   Server = https://pacman.opengamingcollective.org
    ```
 
 2. Import the repo's PGP key so pacman can verify package and database signatures:
