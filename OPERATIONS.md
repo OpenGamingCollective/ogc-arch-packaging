@@ -1,6 +1,19 @@
 # OPERATIONS.md — ogc-arch-repo runbook
 
-> Operator reference for the collection pipeline: the full `collect.yml` workflow spec, operational characteristics, manual operation, health checks, and failure-mode recovery.
+> Operator reference for the collection pipeline: the full `collect.yml` workflow spec, operational characteristics, secrets, manual operation, health checks, and failure-mode recovery.
+
+## Repository layout
+
+```
+.
+├── packages.toml                  # registry of source repos (release assets) and OCI images (ORAS) to poll
+├── ogc.asc                        # PGP public key (published for users)
+├── .github/
+│   └── workflows/
+│       └── collect.yml            # hourly cron + manual dispatch workflow
+├── README.md                      # user + contributor documentation
+└── OPERATIONS.md                  # this document: workflow spec, manual operation, failure modes
+```
 
 ## The collection workflow
 
@@ -126,6 +139,30 @@ If `added_files` is empty (every `[[packages]]` source's latest assets **and** e
 - **Single writer / no race:** only this repo writes the DB; `concurrency` prevents overlapping runs. No S3-level locking required.
 - **Cost:** this repo is public, so standard GitHub-hosted runners are free (see [GitHub Actions billing](https://docs.github.com/en/billing/managing-billing-for-your-products/managing-billing-for-github-actions/about-billing-for-github-actions)). Hourly cron is effectively $0 and does not consume the org's private-repo minute allowance. Scheduled runs that find nothing new still consume a runner minute or two for setup, but at zero dollar cost.
 
+### Limitations
+
+- **x86_64 only.** Whatever architectures the source repos attach is what gets served. If `aarch64` or others are added later, the dedup logic must account for the `-<arch>` suffix in filenames to avoid cross-arch collisions.
+- **No pruning.** When a new version of a package is ingested, `repo-add` (without `--remove`) updates the database entry to point at the new file, but the old `.pkg.tar.zst` and `.sig` files are not deleted from S3. Old versions remain reachable via their direct URL, enabling manual rollback or pinning. The bucket grows over time — this is accepted. If pruning becomes necessary later, it can be added as a separate step without changing the ingestion model.
+- **Hourly polling only.** There is no real-time ingestion (see [Future upgrade path](#future-upgrade-path)).
+
+## Future upgrade path
+
+If hourly lag becomes unacceptable, replace the cron trigger with a **webhook bridge**: a small HTTP receiver (e.g. a Cloudflare Worker) that receives "Release published" webhooks from source repos and forwards them to this repo as `repository_dispatch` events. The workflow would gain `on: repository_dispatch` alongside the existing `schedule` and `workflow_dispatch` triggers, with no other changes — the same collect & merge logic runs either way. The one PAT the bridge needs lives only in the bridge, not in any source repo. This is a pure automation upgrade; the ingestion, signing, and publishing model is unchanged.
+
+## Secrets & variables
+
+All configuration is stored as repository secrets in the central repo.
+
+| Name | Sensitive | Purpose |
+|---|---|---|
+| `PGP_SIGNING_KEY` | yes | PGP private key used to sign every package and the repo database. Lives only in this repo. |
+| `BUCKET_ACCESS_KEY` | yes | S3 access key for writing to the bucket. |
+| `BUCKET_SECRET_KEY` | yes | S3 secret key for writing to the bucket. |
+| `BUCKET_ENDPOINT` | yes | S3-compatible endpoint URL (e.g. `https://s3.example.com`). |
+| `S3_BUCKET` | no (but not secret-free) | Bucket name to upload to. |
+| `BUCKET_PUBLIC_URL` | no | Public URL where the bucket is served. Used to fetch the existing DB at the start of each run. Not sensitive — it's the URL users put in their pacman.conf. |
+| `GITHUB_TOKEN` | auto | Auto-provided by GitHub Actions. Used by `gh release view` / `gh release download` to read public source repos' release assets. No extra secret needed for public source repos; if a source repo is private, use a PAT with `contents: read` on that repo instead. |
+
 ## Manual operation
 
 The same `collect.yml` accepts `workflow_dispatch` with an optional `repo` string input. The value is matched against both `[[packages]].repo` and `[[images]].source_repo`, so the same escape hatch works for either source type.
@@ -161,12 +198,11 @@ Quick ways to verify the pipeline is healthy:
    curl -I "<BUCKET_PUBLIC_URL>/ogc.db.tar.gz"
    ```
    Check the `Last-Modified` header. If it is older than a few hours despite known new releases being published, a scheduled run was likely missed or failed — trigger a manual run.
-3. **DB integrity** — spot-check that the DB lists the packages you expect:
+3. **DB integrity** — list every package currently in the published database:
    ```bash
-   curl -sf "<BUCKET_PUBLIC_URL>/ogc.db.tar.gz" -o /tmp/ogc.db.tar.gz
-   bsdtar -xOzf /tmp/ogc.db.tar.gz | strings | grep -E '^(asusctl|rog-control-center|supergfxctl|linux-ogc)-'
+   curl -sf "<BUCKET_PUBLIC_URL>/ogc.db.tar.gz" | bsdtar -tf - | grep '/desc$'
    ```
-   Missing packages that you know have been released indicate a fetch or merge problem — trigger a manual run.
+   Output is one line per package in the form `<name>-<version>/desc`. Compare the listed package names against the sources in `packages.toml` — a source whose latest release is missing from the DB indicates a fetch or merge problem. Trigger a manual run if something expected is absent.
 4. **OCI source freshness** (for each `[[images]]` entry) — confirm the expected build tag exists in the OCI registry and matches the source repo's latest git tag:
     ```bash
     # Source repo's latest git tag:
@@ -198,6 +234,7 @@ Quick ways to verify the pipeline is healthy:
 
 - GitHub Actions `schedule` event: https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#schedule
 - GitHub Actions `workflow_dispatch` event: https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#workflow_dispatch
+- GitHub Actions `repository_dispatch` event (for the future upgrade path): https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#repository_dispatch
 - GitHub Actions `concurrency` syntax: https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#concurrency
 - GitHub Actions billing (public repos = free standard runners): https://docs.github.com/en/billing/managing-billing-for-your-products/managing-billing-for-github-actions/about-billing-for-github-actions
 - `repo-add` man page: https://man.archlinux.org/man/repo-add.1
