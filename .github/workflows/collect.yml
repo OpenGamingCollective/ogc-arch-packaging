@@ -48,16 +48,19 @@ jobs:
 
       - name: Fetch existing repo database
         run: |
-          if curl -sfI "${BUCKET_PUBLIC_URL}/ogc.db.tar.gz" -o /dev/null; then
+          if cp_out=$(aws s3 cp "s3://${S3_BUCKET}/ogc.db.tar.gz" ./ogc.db.tar.gz --endpoint-url "${BUCKET_ENDPOINT}" --no-progress 2>&1); then
             echo "Existing database found, downloading..."
-            curl -sf "${BUCKET_PUBLIC_URL}/ogc.db.tar.gz" -o ogc.db.tar.gz || {
-              echo "::error::Database exists at ${BUCKET_PUBLIC_URL}/ogc.db.tar.gz but download failed"
+            aws s3 cp "s3://${S3_BUCKET}/ogc.db.tar.gz.sig" ./ogc.db.tar.gz.sig --endpoint-url "${BUCKET_ENDPOINT}" --no-progress 2>/dev/null || true
+            if ! bsdtar -tf ogc.db.tar.gz >/dev/null 2>&1; then
+              echo "::error::Downloaded ogc.db.tar.gz is not a valid repo database; refusing to rebuild from corrupt state"
               exit 1
-            }
-            curl -sf "${BUCKET_PUBLIC_URL}/ogc.db.tar.gz.sig" -o ogc.db.tar.gz.sig 2>/dev/null || true
-            echo "Downloaded existing database ($(stat -c %s ogc.db.tar.gz 2>/dev/null || echo 0) bytes)"
-          else
+            fi
+            echo "Downloaded existing database ($(stat -c %s ogc.db.tar.gz) bytes)"
+          elif echo "${cp_out}" | grep -qi "NoSuchKey"; then
             echo "No existing database found -- starting fresh (first run or DB was deleted)"
+          else
+            echo "::error::Could not reach bucket origin to fetch ogc.db.tar.gz; treating as fatal on non-first runs: ${cp_out}"
+            exit 1
           fi
 
       - name: Parse packages.toml
