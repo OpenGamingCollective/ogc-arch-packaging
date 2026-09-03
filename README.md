@@ -42,7 +42,7 @@ The key fingerprint is `F79100EF8C802DAB81C323BB8EEA5962FE510E19`, and the publi
 A single workflow — [`.github/workflows/collect.yml`](./.github/workflows/collect.yml) — runs hourly on a cron (with a manual dispatch fallback). It reads `packages.toml`, fetches the existing `ogc.db.tar.gz` from the bucket, then runs two ingestion passes:
 
 1. **Release assets** — for each `[[packages]]` entry, polls the source repo's latest GitHub release and downloads any `*.pkg.tar.zst` assets not already in the database.
-2. **OCI/ORAS** — for each `[[images]]` entry, resolves the latest build tag, pulls the image with ORAS, extracts its `*.pkg.tar.zst` files, and keeps those not already in the database.
+2. **OCI/ORAS** — for each `[[images]]` entry, resolves the newest build tag that has an image in the OCI registry (walking back through up to the 10 latest git tags until one has a build), pulls the image with ORAS, extracts its `*.pkg.tar.zst` files, and keeps those not already in the database.
 
 New packages from either pass are GPG-signed, merged into the database via `repo-add`, and uploaded back to the bucket along with the updated database. The workflow is idempotent — the database itself is the source of truth for what has been ingested, so re-running it changes nothing when there's nothing new.
 
@@ -97,7 +97,7 @@ For sources that publish `*.pkg.tar.zst` files as OCI artifacts (built with [ORA
    ```
    Optionally set `tag = "..."` to pin a specific build.
 3. Commit and push to the default branch.
-4. The next hourly cron run resolves the latest build tag, pulls the image with ORAS, extracts the `*.pkg.tar.zst` files, and ingests any not already in the database. To run immediately, trigger the workflow manually with the `repo` input set to the new `source_repo` (see [`OPERATIONS.md`](./OPERATIONS.md)).
+4. The next hourly cron run resolves the newest build tag that has an image (walking back through up to the 10 latest git tags until one has a build), pulls the image with ORAS, extracts the `*.pkg.tar.zst` files, and ingests any not already in the database. To run immediately, trigger the workflow manually with the `repo` input set to the new `source_repo` (see [`OPERATIONS.md`](./OPERATIONS.md)).
 
 ## `packages.toml` spec
 

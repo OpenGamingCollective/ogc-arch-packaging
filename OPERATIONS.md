@@ -75,14 +75,16 @@ for img in images:
         resolved_tag = img.tag
     else:
         tags = gh_api(f"/repos/{img.source_repo}/git/refs/tags")   # list git tags
-        release_tag = max(tags, key=semver)                         # highest version tag
-        version  = release_tag.lstrip("v")                          # "7.1.3-ogc3.2"
         oci_tags = oras_repo_tags(img.image)                        # all tags in the OCI repo
-        builds   = [t for t in oci_tags if t matches ^<version>\.[0-9]+$]
-        if builds is empty:
-            warn("no OCI build for {img.source_repo} latest version {version}; skipping")
+        for release_tag in last(tags sorted by version, 10):        # newest first
+            version  = release_tag.lstrip("v")                      # "7.1.3-ogc3.2"
+            builds   = [t for t in oci_tags if t matches ^<version>\.[0-9]+$]
+            if builds is not empty:
+                resolved_tag = max(builds)                          # highest build_num, e.g. "7.1.3-ogc3.2.5"
+                break
+        else:
+            warn("no OCI build for {img.source_repo} within the 10 latest tags; skipping")
             continue
-        resolved_tag = max(builds)                                  # highest build_num, e.g. "7.1.3-ogc3.2.5"
 
     workdir = f"oci/{slug(img.image)}/{resolved_tag}"
     oras_pull(f"{img.image}:{resolved_tag}", "-o", workdir)   # extracts *.pkg.tar.zst into workdir
@@ -102,11 +104,12 @@ if added_files:
 
 ### Tag resolution details (OCI pass)
 
-- The source repo's latest git tag is read with `gh api "repos/<source_repo>/git/refs/tags"`.
-- The leading `v` is stripped to produce `<version>` (e.g. `v7.1.3-ogc3.2` → `7.1.3-ogc3.2`).
-- All tags in the OCI repo are listed with `oras repo tags <image>`.
-- Tags matching `^<version>\.[0-9]+$` are candidate build tags; the numerically highest `<N>` wins. This mirrors the source build workflow, which tags each build as `<version>.<build_num>` and increments `<build_num>` on rebuilds of the same content.
-- If no candidate exists, the source is skipped with a warning (the build may not have finished publishing yet). The rest of the run continues.
+- The source repo's git tags are read with `gh api "repos/<source_repo>/git/refs/tags"` and sorted by version; the **10 newest** are considered, newest first.
+- For each candidate, the leading `v` is stripped to produce `<version>` (e.g. `v7.1.3-ogc3.2` → `7.1.3-ogc3.2`).
+- All tags in the OCI repo are listed once with `oras repo tags <image>`.
+- For a candidate, tags matching `^<version>\.[0-9]+$` are candidate build tags; the numerically highest `<N>` wins. This mirrors the source build workflow, which tags each build as `<version>.<build_num>` and increments `<build_num>` on rebuilds of the same content.
+- The loop stops at the first (newest) candidate that has a matching build tag. This keeps ingestion current even when several versions are released at once and their OCI builds are published one by one: each hourly run pulls whatever build is available, stepping backwards through up to 10 tags until it finds one.
+- If none of the 10 candidates has a build tag, the source is skipped with a warning (the build may not have finished publishing yet). The rest of the run continues.
 - If `[[images]].tag` is set explicitly, all of the above is bypassed and that tag is used verbatim.
 
 ### Dedup / idempotency algorithm
@@ -203,14 +206,14 @@ Quick ways to verify the pipeline is healthy:
    curl -sf "<BUCKET_PUBLIC_URL>/ogc.db.tar.gz" | bsdtar -tf - | grep '/desc$'
    ```
    Output is one line per package in the form `<name>-<version>/desc`. Compare the listed package names against the sources in `packages.toml` — a source whose latest release is missing from the DB indicates a fetch or merge problem. Trigger a manual run if something expected is absent.
-4. **OCI source freshness** (for each `[[images]]` entry) — confirm the expected build tag exists in the OCI registry and matches the source repo's latest git tag:
+4. **OCI source freshness** (for each `[[images]]` entry) — confirm an expected build tag exists in the OCI registry for one of the source repo's 10 latest git tags:
     ```bash
-    # Source repo's latest git tag:
-    gh api "repos/OpenGamingCollective/kernel-packages/git/refs/tags" -q '.[].ref' | sed 's|refs/tags/||' | sort -V | tail -1
+    # Source repo's 10 latest git tags (newest last; the workflow walks these newest-first):
+    gh api "repos/OpenGamingCollective/kernel-packages/git/refs/tags" -q '.[].ref' | sed 's|refs/tags/||' | sort -V | tail -10
     # Tags present in the OCI repo (look for <version-stripped-of-v>.<N>):
     oras repo tags ghcr.io/opengamingcollective/kernel-packages-arch
     ```
-    A latest git tag with no matching build tag in the OCI repo means the source build hasn't published yet (or failed); the workflow will skip it with a warning.
+    If none of the 10 latest git tags has a matching build tag in the OCI repo, the source build hasn't published yet (or failed); the workflow will skip it with a warning.
 
 ## Failure modes & recovery
 
@@ -221,7 +224,7 @@ Quick ways to verify the pipeline is healthy:
 | **S3 unreachable on upload** | Network blip, endpoint down. | Upload step fails; workflow exits non-zero. The DB and signed packages are present locally from the merge step. | Fix S3 and re-run. Idempotency ensures no double-add. |
 | **DB fetch fails on the very first run** | Bucket is empty / DB was deleted. | Tolerated. `repo-add` creates a fresh `ogc.db.tar.gz` from the first ingested package. | None needed — this is the expected first-run path. |
 | **A source repo's latest release has no matching assets** | Source repo tagged a release but didn't attach `*.pkg.tar.zst`, or the asset glob is wrong. | The repo is skipped; no error. Other repos in the list are still processed. | Fix the source repo's release (attach assets) or fix the glob in `packages.toml`, then re-run. |
-| **An OCI source's latest git tag has no matching build tag** | Source repo has a git tag but the OCI build hasn't published yet, or the build workflow failed, or `[[images]].image` points at the wrong registry path. | The image is skipped with a warning (`no OCI build for <source_repo> latest version <version>; skipping`). Other sources in the run are still processed. | Wait for the source build to publish, or fix the source build, or fix the `[[images]]` entry in `packages.toml`, then re-run. |
+| **An OCI source has no matching build tag within its 10 latest git tags** | The source's 10 newest git tags all lack a published OCI build — the build pipeline is far behind or failed, or `[[images]].image` points at the wrong registry path. | The image is skipped with a warning (`no OCI build for <source_repo> within the 10 latest tags; skipping`). Other sources in the run are still processed. | Wait for the source build to publish, or fix the source build, or fix the `[[images]]` entry in `packages.toml`, then re-run. |
 | **`oras repo tags` / `oras pull` fails** | Network blip, registry down, image or tag deleted, rate-limited by GHCR (anonymous pull limits). | The workflow exits non-zero at the OCI pass. No upload happens. | Re-run after the registry is reachable. If rate-limited, consider switching the entry to authenticated pulls (future work). |
 | **Extracted OCI image has no files matching `asset_glob`** | The source build pushed an OCI image whose layers don't contain `*.pkg.tar.zst` (e.g. wrong files pushed), or `asset_glob` is wrong. | The image is skipped with a warning; other sources in the run are still processed. | Fix the source build's `oras push` invocation or fix `asset_glob` in `packages.toml`, then re-run. |
 | **A downloaded package is corrupt or malformed** | Truncated upload on the source side, network corruption. | `repo-add` will fail when trying to add the bad file. The workflow exits non-zero. No upload happens, so the public DB is unaffected. | Re-attach a valid asset (release-asset source) or re-push a valid OCI image (OCI source), then re-run. The corrupt file is not ingested. |
