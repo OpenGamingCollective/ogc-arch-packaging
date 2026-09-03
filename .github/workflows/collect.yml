@@ -150,30 +150,42 @@ jobs:
               resolved_tag="${explicit_tag}"
               echo "Using explicit tag: ${resolved_tag}"
             else
-              release_tag=$(gh api "repos/${source_repo}/git/refs/tags" -q '.[].ref' 2>/dev/null | sed 's|refs/tags/||' | sort -V | tail -1) || {
+              release_tags=$(gh api "repos/${source_repo}/git/refs/tags" -q '.[].ref' 2>/dev/null | sed 's|refs/tags/||' | sort -V) || {
                 echo "::warning::Failed to list tags for ${source_repo}, skipping"
                 echo "::endgroup::"
                 continue
               }
-              if [ -z "${release_tag}" ]; then
+              if [ -z "${release_tags}" ]; then
                 echo "::warning::No tags found for ${source_repo}, skipping"
                 echo "::endgroup::"
                 continue
               fi
-              version="${release_tag#v}"
-              echo "Latest tag: ${release_tag} -> version: ${version}"
 
-              ver_regex="${version//./\\.}"
               tags=$(oras repo tags "${image}" 2>/dev/null) || {
                 echo "::warning::Failed to list tags for ${image}, skipping"
                 echo "::endgroup::"
                 continue
               }
 
-              resolved_tag=$(echo "${tags}" | grep -E "^${ver_regex}\.[0-9]+$" | awk -F. '{print $NF, $0}' | sort -n | tail -1 | cut -d' ' -f2-)
+              max_tags=10
+              resolved_tag=""
+              for release_tag in $(echo "${release_tags}" | tail -n "${max_tags}" | tac); do
+                version="${release_tag#v}"
+                echo "Checking tag: ${release_tag} -> version: ${version}"
+
+                ver_regex="${version//./\\.}"
+                build_tag=$(echo "${tags}" | grep -E "^${ver_regex}\.[0-9]+$" | awk -F. '{print $NF, $0}' | sort -n | tail -1 | cut -d' ' -f2-)
+
+                if [ -n "${build_tag}" ]; then
+                  resolved_tag="${build_tag}"
+                  echo "Found OCI build: ${resolved_tag} (from ${release_tag})"
+                  break
+                fi
+                echo "  No OCI build for ${release_tag}, trying next"
+              done
 
               if [ -z "${resolved_tag}" ]; then
-                echo "::warning::No OCI build for ${source_repo} latest version ${version}; skipping"
+                echo "::warning::No OCI build for ${source_repo} within the ${max_tags} latest tags; skipping"
                 echo "::endgroup::"
                 continue
               fi
