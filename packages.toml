@@ -25,3 +25,7 @@ asset_glob  = "*.pkg.tar.zst"
 [[packages]]
 repo = "OpenGamingCollective/linux-unstable"
 asset_glob = "*.pkg.tar.zst"
+
+[[packages]]
+repo = "OpenGamingCollective/gamescope-builds"
+asset_glob = "*.pkg.tar.zst"
