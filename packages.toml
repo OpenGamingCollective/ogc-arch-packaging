@@ -21,3 +21,7 @@ asset_glob = "*.pkg.tar.zst"
 source_repo = "OpenGamingCollective/kernel-packages"
 image       = "ghcr.io/opengamingcollective/kernel-packages-arch"
 asset_glob  = "*.pkg.tar.zst"
+
+[[packages]]
+repo = "OpenGamingCollective/linux-unstable"
+asset_glob = "*.pkg.tar.zst"
