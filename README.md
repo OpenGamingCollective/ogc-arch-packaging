@@ -10,6 +10,7 @@
 - [`rog-control-center`](https://github.com/OpenGamingCollective/asusctl) — GUI for asusctl
 - [`cardwire`](https://github.com/OpenGamingCollective/cardwire) — GPU Manager that uses eBPF LSM hooks to block GPUs
 - [`linux-ogc`](https://github.com/OpenGamingCollective/kernel-packages) — OGC kernel builds
+- [`linux-unstable-ogc`](https://github.com/OpenGamingCollective/linux-unstable) — OGC unstable kernel for testing and development b>
 
 > This list is maintained by hand. The source of truth for *which repos are polled* is [`packages.toml`](./packages.toml); the list above reflects which package names those sources currently publish.
 
